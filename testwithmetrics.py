@@ -17,6 +17,8 @@ from util import html
 from util.util import tensor2im
 from PIL import Image
 import data
+# Import L1 Loss function from PyTorch
+import torch.nn.functional as F
 
 # Parse options
 opt = TestOptions().parse()
@@ -50,7 +52,7 @@ os.makedirs(fake_images_dir, exist_ok=True)
 
 # CSV file to save metrics
 test_metrics_file = 'test_metrics_log.csv'
-fieldnames = ['image_id', 'ssim', 'psnr', 'fid']
+fieldnames = ['image_id', 'ssim', 'psnr', 'fid', 'L1']
 if not os.path.exists(test_metrics_file):
     with open(test_metrics_file, 'w', newline='') as csvfile:
         writer_csv = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -76,6 +78,14 @@ def compute_psnr(img1, img2):
 def compute_fid(real_images_path, fake_images_path, device):
     fid_value = calculate_fid_given_paths([real_images_path, fake_images_path], batch_size=50, device=device, dims=2048)
     return fid_value
+
+def compute_l1_loss(img1, img2):
+    # Ensure both tensors are on the same device
+    if img2.device != img1.device:
+        img2 = img2.to(img1.device)
+
+    # Compute the L1 loss
+    return F.l1_loss(img1, img2).item()
 
 # Test loop
 for i, data_i in enumerate(dataloader):
@@ -103,12 +113,13 @@ for i, data_i in enumerate(dataloader):
         # Compute SSIM and PSNR
         ssim_value = compute_ssim(fake_image.detach(), real_image.detach())
         psnr_value = compute_psnr(fake_image.detach(), real_image.detach())
-        print(f"Image {i}_{b} - SSIM: {ssim_value}, PSNR: {psnr_value}")
+        #print(f"Image {i}_{b} - SSIM: {ssim_value}, PSNR: {psnr_value}")
+        l1_value = compute_l1_loss(fake_image.detach(), real_image.detach())    
         
         # Save metrics to CSV file
         with open(test_metrics_file, 'a', newline='') as csvfile:
             writer_csv = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer_csv.writerow({'image_id': f'{i}_{b}', 'ssim': ssim_value, 'psnr': psnr_value, 'fid': 'N/A'})
+            writer_csv.writerow({'image_id': f'{i}_{b}', 'ssim': ssim_value, 'psnr': psnr_value, 'fid': 'N/A','L1': l1_value})
         
         # Save synthesized image
         visuals = OrderedDict([('input_label', data_i['label'][b]),
