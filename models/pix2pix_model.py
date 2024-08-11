@@ -133,39 +133,64 @@ class Pix2PixModel(torch.nn.Module):
             input_semantics = torch.cat((input_semantics, instance_edge_map), dim=1)
 
         return input_semantics, data['image']
+    
+
 
     def compute_generator_loss(self, input_semantics, real_image):
         G_losses = {}
 
+        # Generate fake image and calculate KLD loss if using VAE
         fake_image, KLD_loss = self.generate_fake(
             input_semantics, real_image, compute_kld_loss=self.opt.use_vae)
 
         if self.opt.use_vae:
             G_losses['KLD'] = KLD_loss
 
+        # Define a mask to exclude white spaces (holes, windows)
+        white_threshold = 250  # Define the threshold for white
+        mask = (real_image >= white_threshold)
+
+        # Apply the mask to the fake image
+        masked_fake_image = torch.where(mask, fake_image.new_zeros(fake_image.size()), fake_image)
+
+        # Discriminate fake and real images
         pred_fake, pred_real = self.discriminate(
-            input_semantics, fake_image, real_image)
+            input_semantics, masked_fake_image, real_image)
 
-        G_losses['GAN'] = self.criterionGAN(pred_fake, True,
-                                            for_discriminator=False)
+        # Calculate GAN loss
+        GAN_loss = self.criterionGAN(pred_fake, True, for_discriminator=False)
+        G_losses['GAN'] = GAN_loss
 
+        # Calculate feature matching loss if not excluded
         if not self.opt.no_ganFeat_loss:
             num_D = len(pred_fake)
             GAN_Feat_loss = self.FloatTensor(1).fill_(0)
-            for i in range(num_D):  # for each discriminator
-                # last output is the final prediction, so we exclude it
+            for i in range(num_D):  # For each discriminator
                 num_intermediate_outputs = len(pred_fake[i]) - 1
-                for j in range(num_intermediate_outputs):  # for each layer output
+                for j in range(num_intermediate_outputs):  # For each layer output
                     unweighted_loss = self.criterionFeat(
                         pred_fake[i][j], pred_real[i][j].detach())
                     GAN_Feat_loss += unweighted_loss * self.opt.lambda_feat / num_D
             G_losses['GAN_Feat'] = GAN_Feat_loss
 
+        # Calculate VGG loss if not excluded
         if not self.opt.no_vgg_loss:
-            G_losses['VGG'] = self.criterionVGG(fake_image, real_image) \
-                * self.opt.lambda_vgg
+            VGG_loss = self.criterionVGG(masked_fake_image, real_image) * self.opt.lambda_vgg
+            G_losses['VGG'] = VGG_loss
 
-        return G_losses, fake_image
+        # Combine all losses to calculate the final generator loss
+        self.loss_G = G_losses['GAN']  # Start with GAN loss
+        if 'GAN_Feat' in G_losses:
+            self.loss_G += G_losses['GAN_Feat']
+        if 'VGG' in G_losses:
+            self.loss_G += G_losses['VGG']
+        if 'KLD' in G_losses:
+            self.loss_G += G_losses['KLD']
+
+        return G_losses, masked_fake_image
+
+
+
 
     def compute_discriminator_loss(self, input_semantics, real_image):
         D_losses = {}
